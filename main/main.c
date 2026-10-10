@@ -78,9 +78,9 @@ void app_main() {
     xTaskCreatePinnedToCore(
             control_loop_task,
             "control_loop_task",
-            2048,
+            4096,
             NULL,
-            1,
+            4,
             NULL,
             1
             );
@@ -91,9 +91,9 @@ void app_main() {
     xTaskCreatePinnedToCore(
             udp_receiver_task,
             "udp_receiver_task",
-            2048,
+            4096,
             NULL,
-            1,
+            5,
             NULL,
             0
             );

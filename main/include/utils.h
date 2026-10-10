@@ -6,16 +6,16 @@
 #define STR(x) STR_HELPER(x)
 
 typedef struct {
-    int8_t forward;
-    int8_t turn;
+    // int8_t forward;
+    // int8_t turn;
     uint8_t speed; // 0: brake 
     uint8_t flags;
+    // [Bit 3: Right] [Bit 2: Left] [Bit 1: Back] [Bit 0: Fwd]
 
     // 1st bit for brake
-    uint8_t servo[2];
-    // uint8_t servo[6];
+    // uint8_t servo[2];
+    uint8_t servo[6];
     uint8_t checksum;
-    // uint8_t __padding;
 } __attribute__((__packed__)) ControlData;
 
 typedef union {

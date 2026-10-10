@@ -33,14 +33,14 @@ static const char *TAG = "CONTROL_LOOP_TASK";
 #define MOTOR_DIR_B  1
 
 static const gpio_num_t s_servo_gpios[NUM_SERVOS] = {
-    GPIO_NUM_18,
-    GPIO_NUM_19,
-    GPIO_NUM_21,
-    GPIO_NUM_22,
-    GPIO_NUM_23,
-    GPIO_NUM_25,
-    GPIO_NUM_4,
-    GPIO_NUM_16 // Gemini: Use GPIO_NUM_17 if GPIO 16 is reserved by custom UART
+    GPIO_NUM_4,  // Base rotation
+    GPIO_NUM_18, // Base joint
+    GPIO_NUM_19, // Base joint mirror
+    GPIO_NUM_16, // Elbow joint servo
+    GPIO_NUM_17, // Last arm servo
+    GPIO_NUM_21, // Gripper rotation servo
+    GPIO_NUM_22, // Gripper grip
+    GPIO_NUM_23  // Gripper grip mirror
 };
 
 static const gpio_num_t s_motor_gpios[NUM_MOTOR_PINS] = {
@@ -53,8 +53,9 @@ static const gpio_num_t s_motor_gpios[NUM_MOTOR_PINS] = {
     GPIO_NUM_33   // Motor 2 LPWM
 };
 
+static int s_last_angles[NUM_SERVOS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 
-IRAM_ATTR void set_servo_angle(uint8_t servo_idx, int angle)
+static void set_servo_angle(uint8_t servo_idx, int angle)
 {
     if (servo_idx >= NUM_SERVOS) return;
     if (angle < 0) angle = 0;
@@ -62,6 +63,10 @@ IRAM_ATTR void set_servo_angle(uint8_t servo_idx, int angle)
 
     // Linear pulse interpolation: 500us to 2500us
     uint32_t pulse_us = 500 + (angle * 2000) / 180;
+
+    // Skip redundant hardware writes
+    if (s_last_angles[servo_idx] == angle) return;
+    s_last_angles[servo_idx] = angle;
     
     // Duty = (pulse_us / 20000us) * 16383
     uint32_t duty = (pulse_us * ((1 << SERVO_DUTY_RES) - 1)) / 20000;
@@ -70,7 +75,7 @@ IRAM_ATTR void set_servo_angle(uint8_t servo_idx, int angle)
     ledc_update_duty(SERVO_SPEED_MODE, (ledc_channel_t)servo_idx);
 }
 
-IRAM_ATTR void set_motor_speed(uint8_t motor_id, uint8_t speed, int dir)
+static void set_motor_speed(uint8_t motor_id, uint8_t speed, int dir)
 {
     if (motor_id > 1) return; // 0 = Motor 1, 1 = Motor 2
     
@@ -99,7 +104,15 @@ IRAM_ATTR void set_motor_speed(uint8_t motor_id, uint8_t speed, int dir)
     ledc_update_duty(MOTOR_SPEED_MODE, lpwm_ch);
 }
 
-void handle_packet_drive(uint8_t speed, uint8_t dir_bits) {
+static void handle_packet_drive(uint8_t speed, uint8_t dir_bits) {
+    static uint16_t s_last_drive_state = 0xFFFF;
+
+    uint16_t current_state = ((uint16_t)dir_bits << 8) | speed;
+    if (s_last_drive_state == current_state) {
+        return; // Zero math, zero motor calls
+    }
+    s_last_drive_state = current_state;
+
     // dir_bits: [Bit 3: Right] [Bit 2: Left] [Bit 1: Back] [Bit 0: Fwd]
     int t = (dir_bits & 1) - ((dir_bits >> 1) & 1);
     int s = ((dir_bits >> 3) & 1) - ((dir_bits >> 2) & 1);
@@ -107,12 +120,29 @@ void handle_packet_drive(uint8_t speed, uint8_t dir_bits) {
     int l = t + s;
     int r = t - s;
 
-    ESP_LOGI(TAG, "left: %d, right: %d      dir_bits: %u, t: %d, s:%d", l < 0, r < 0, dir_bits, t,s);
-
     // speed: 0 when stopped, untouched 'speed' when moving
     // dir:   0 for forward (l >= 0), 1 for backward (l < 0)
-    set_motor_speed(MOTOR_LEFT,  speed & -(l != 0), l < 0);
-    set_motor_speed(MOTOR_RIGHT, speed & -(r != 0), r < 0);
+    // set_motor_speed(MOTOR_LEFT,  speed & -(l != 0), l < 0);
+    // set_motor_speed(MOTOR_RIGHT, speed & -(r != 0), r < 0);
+
+    set_motor_speed(MOTOR_LEFT,  (l == 0) ? 0 : speed, (l < 0));
+    set_motor_speed(MOTOR_RIGHT, (r == 0) ? 0 : speed, (r < 0));
+}
+
+static void handle_servo_packet(uint8_t *servo_angle) {
+    set_servo_angle(0, 180 - servo_angle[0]); // Clockwise
+    set_servo_angle(1, servo_angle[1]);
+    set_servo_angle(2, servo_angle[2]);
+    set_servo_angle(3, 180 - servo_angle[2]);
+    set_servo_angle(4, servo_angle[3]);
+    set_servo_angle(5, servo_angle[4]);
+    set_servo_angle(6, servo_angle[5]);
+    set_servo_angle(7, 180 - servo_angle[5]);
+}
+
+static void emergency_stop_motors() {
+    set_motor_speed(MOTOR_LEFT, 0, MOTOR_DIR_F);
+    set_motor_speed(MOTOR_RIGHT, 0, MOTOR_DIR_F);
 }
 
 int init_pheripherals(void) {
@@ -162,10 +192,6 @@ int init_pheripherals(void) {
     return 1;
 }
 
-void emergency_stop_motors() {
-    set_motor_speed(MOTOR_LEFT, 0, MOTOR_DIR_F);
-    set_motor_speed(MOTOR_RIGHT, 0, MOTOR_DIR_F);
-}
 
 void control_loop_task(void *pvParameters) {
     if (init_pheripherals() != 1) {
@@ -186,14 +212,17 @@ void control_loop_task(void *pvParameters) {
 
         if (status == pdPASS) {
             // ESP_LOGI(TAG, "Received packet, speed: %d", data.speed);
-            uint8_t dir = 0;
-            if (data.forward > 0)      dir |= (1 << 0); // Bit 0: FWD
-            else if (data.forward < 0) dir |= (1 << 1); // Bit 1: BACK
+            // uint8_t dir = 0;
+            // if (data.forward > 0)      dir |= (1 << 0); // Bit 0: FWD
+            // else if (data.forward < 0) dir |= (1 << 1); // Bit 1: BACK
 
-            // Turn Right / Left
-            if (data.turn > 0)         dir |= (1 << 3); // Bit 3: RIGHT
-            else if (data.turn < 0)    dir |= (1 << 2); // Bit 2: LEFT
-            handle_packet_drive(data.speed, dir);
+            // // Turn Right / Left
+            // if (data.turn > 0)         dir |= (1 << 3); // Bit 3: RIGHT
+            // else if (data.turn < 0)    dir |= (1 << 2); // Bit 2: LEFT
+            handle_packet_drive(data.speed, data.flags & 0xF);
+            // handle_packet_drive(data.speed,  dir);
+
+            handle_servo_packet(data.servo);
         }
         else {
             emergency_stop_motors();

@@ -5,10 +5,8 @@
 #include "esp_event.h"
 #include "esp_log.h"
 
-#define WIFI_SSID      "Sugat 5G"
-#define WIFI_PASS      "Sugat.io"
-// #define WIFI_SSID      "STORMBORN_STA"
-// #define WIFI_PASS      "stormborn-rocks"
+#define WIFI_SSID      "Stormborn_TF"
+#define WIFI_PASS      "blackflag_sssn"
 
 #define MAXIMUM_RETRY  10
 
