@@ -130,19 +130,31 @@ static void handle_packet_drive(uint8_t speed, uint8_t dir_bits) {
 }
 
 static void handle_servo_packet(uint8_t *servo_angle) {
+    // Base rotation
     set_servo_angle(0, 180 - servo_angle[0]); // Clockwise
+
+    // Base elevation
     set_servo_angle(1, servo_angle[1]);
-    set_servo_angle(2, servo_angle[2]);
+    set_servo_angle(2, 180 - servo_angle[1]);
+
+    // Elbow joint
     set_servo_angle(3, 180 - servo_angle[2]);
+
+    // tip joint
     set_servo_angle(4, servo_angle[3]);
+
+    // Gripper rotation joint
     set_servo_angle(5, servo_angle[4]);
+
+    // Gripper grip
     set_servo_angle(6, servo_angle[5]);
     set_servo_angle(7, 180 - servo_angle[5]);
 }
 
 static void emergency_stop_motors() {
-    set_motor_speed(MOTOR_LEFT, 0, MOTOR_DIR_F);
-    set_motor_speed(MOTOR_RIGHT, 0, MOTOR_DIR_F);
+    // set_motor_speed(MOTOR_LEFT, 0, MOTOR_DIR_F);
+    // set_motor_speed(MOTOR_RIGHT, 0, MOTOR_DIR_F);
+    handle_packet_drive(0,0);
 }
 
 int init_pheripherals(void) {
@@ -219,9 +231,8 @@ void control_loop_task(void *pvParameters) {
             // // Turn Right / Left
             // if (data.turn > 0)         dir |= (1 << 3); // Bit 3: RIGHT
             // else if (data.turn < 0)    dir |= (1 << 2); // Bit 2: LEFT
-            handle_packet_drive(data.speed, data.flags & 0xF);
             // handle_packet_drive(data.speed,  dir);
-
+            handle_packet_drive(data.speed, data.flags & 0xF);
             handle_servo_packet(data.servo);
         }
         else {
